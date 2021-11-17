@@ -21,7 +21,7 @@ from astropy.convolution import Gaussian2DKernel
 from astropy.io import fits
 from astropy.stats import gaussian_fwhm_to_sigma
 from scipy.ndimage import map_coordinates
- 
+
 from .utils import _round_up_to_odd_integer, nearest
 
 
@@ -31,6 +31,8 @@ def get_gausssian_psf_cube(wavelengths, lam_fwhm, fwhm, npix=13, oversample=10):
     sigma = fwhm * gaussian_fwhm_to_sigma * oversample * wavelengths / lam_fwhm
     gaussian_psfs = [Gaussian2DKernel(sig, x_size=size).array for sig in sigma]
     return np.array(gaussian_psfs) * oversample**2
+
+
 
 class PSF:
     def __init__(self, n_subarr=1, n_subpix=13, oversample=10):
@@ -62,8 +64,8 @@ class PSF:
         return new
 
     def __iadd__(self, psf):
-        psf_new = self._psf + psf._psf
-        return psf_new
+        self._psf += psf._psf
+        return self
 
 
     def __mul__(self, x):
@@ -127,6 +129,7 @@ class PSFCube:
         dlam_bound = lam_1 - lam_0
         weight = (wavelength - lam_0) / dlam_bound
         psf_new =  (1 - weight) * psf_0 + weight * psf_1
+        
         return psf_new
     
     def __getitem__(self, idx):
