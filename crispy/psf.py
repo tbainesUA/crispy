@@ -123,14 +123,19 @@ class PSFCube:
     
     def _interp(self, wavelength):
         """linear interpolation"""
-        lower_bound, upper_bound = nearest(self._wavelengths, wavelength)
-        lam_0, lam_1 = self._wavelengths[lower_bound], self._wavelengths[upper_bound]
-        psf_0, psf_1 = self[lower_bound], self[upper_bound]
-        dlam_bound = lam_1 - lam_0
-        weight = (wavelength - lam_0) / dlam_bound
-        psf_new =  (1 - weight) * psf_0 + weight * psf_1
-        
-        return psf_new
+        if wavelength <= np.min(self._wavelengths):
+            return self[0]
+        if wavelength >= np.max(self._wavelengths):
+            return self[-1]
+        else:
+            # print(self._wavelengths, wavelength)
+            lower_bound, upper_bound = nearest(self._wavelengths, wavelength)
+            lam_0, lam_1 = self._wavelengths[lower_bound], self._wavelengths[upper_bound]
+            psf_0, psf_1 = self[lower_bound], self[upper_bound]
+            dlam_bound = lam_1 - lam_0
+            weight = (wavelength - lam_0) / dlam_bound
+            psf_new =  (1 - weight) * psf_0 + weight * psf_1
+            return psf_new
     
     def __getitem__(self, idx):
         return self._psf_cube[idx]

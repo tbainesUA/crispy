@@ -2,6 +2,7 @@ import numpy as np
 import time 
 
 from .psf import GaussianPSFCube
+from .utils import calculate_bin_edges
 
 from astropy.io import fits
 
@@ -131,8 +132,7 @@ class IFS:
         """Lenslet clocking angle"""
         return np.arctan(1/self.interlace)
     
-    def propagate_mono(self, lammin, lammax, psfs, nlam=10):
-        
+    def propagate_mono(self, lammin, lammax, psfs, image_plane=None, nlam=10):
         
         
         order=3
@@ -145,13 +145,21 @@ class IFS:
         # lenslet coordinates
         i_lens, j_lens = np.indices((self.nlens, self.nlens)) - self.nlens // 2 
         
+        if image_plane is not None:
+            image_plane = np.zeros((self.nlens, self.nlens))
+            r = np.hypot(i_lens, j_lens)
+            mask = r < self.nlens // 5
+            image_plane[mask] = 1
+            
+            print(image_plane.sum())
+        
         # detector stuff
         size = self.npix + 2*padwidth
         image = np.zeros((size, size))
         y_det, x_det = np.indices(image.shape)
         
         # wavelengths to integrate over
-        wavelengths = np.linspace(lammin, lammax, nlam)
+        wavelengths = np.linspace(lammin, lammax, nlam, endpoint=True)
            
         for wavelength in wavelengths:
             
@@ -163,15 +171,25 @@ class IFS:
             coef = initcoef(order, scale, angle, self.npix // 2 + dispersion, self.npix//2)
             x_cen, y_cen = transform(i_lens, j_lens, order, coef)
             
-            x_cen = x_cen.reshape(-1)
-            y_cen = y_cen.reshape(-1)
+            x_cen = x_cen.reshape(-1) + padwidth
+            y_cen = y_cen.reshape(-1) + padwidth
             
+            # print(x_cen, y_cen)
             # image the psf onto the correct position
-            for x, y in zip(x_cen, y_cen):
+            for i, (x, y) in enumerate(zip(x_cen, y_cen)):
                 if not (x > npix // 2 and x < size - npix // 2 and 
                         y > npix // 2 and y < size - npix // 2):
                     continue
                 
+                # a = i_lens.ravel()[i] + image_plane.shape[0] //2
+                # b = j_lens.ravel()[i] + image_plane.shape[1]//2
+                
+                # val = image_plane[a,b]
+                # # print(val)
+                # if val == 0:
+                #     continue
+                val=1.0
+                # print(a,b, val)
                 iy1 = int(y) - npix // 2
                 iy2 = iy1 + npix
                 ix1 = int(x) - npix // 2
@@ -185,19 +203,54 @@ class IFS:
                 psflet = psf.map_psf([y_interp, x_interp])               
                
                
-                image[iy1:iy2, ix1:ix2] += psflet
+                image[iy1:iy2, ix1:ix2] += val * psflet
 
+        # print(np.sum(image / nlam))
         # return  the padded images
         return image / nlam
     
-    def propagate_main(self, lam_bin_centers=None, images=None, dlam=None):
+    def propagate_main(self, lam_bin_centers, images=None, lam_bin_edges=None, dlam=None):
         """
         1. generate the padded detector images
         2. multiple spectral cube spaxels with psflets cutouts and combine images into one
         3. remove padding
         4. return image
         """
-        pass
+        
+    
+        lam_bin_centers = np.array(lam_bin_centers)
+        
+        nlam = len(lam_bin_centers)
+        
+        if lam_bin_edges is None:
+            if len(lam_bin_centers) > 1:
+                lam_bin_edges = calculate_bin_edges(lam_bin_centers)
+            else:
+                if dlam is None:
+                    raise ValueError("No bandwidth specified")
+                lam_bin_edges = np.array([lam_bin_centers - dlam / 2, lam_bin_centers + dlam / 2])
+                
+        else:
+            print('Assuming wavelength bin edges were provided')
+            
+        
+        # initialize the psf model data cube
+        psf_cube = GaussianPSFCube(lam_bin_centers, self.lam_ref, self.fwhm)
+        
+        # generate image templates
+        images = []
+        for i in range(nlam):
+            lam_min, lam_max = lam_bin_edges[i], lam_bin_edges[i+1]
+            
+            t_start = time.time()
+            image = self.propagate_mono(lam_min, lam_max, psf_cube)
+            t_end = time.time()
+            dt = t_end - t_start
+            print(f'Ellapsed time: {dt} s')
+            images.append(image * (lam_max - lam_min))
+            
+        return images
+            
     
     def save_science_frames_as_fits(self):
         pass
