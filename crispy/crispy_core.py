@@ -1,10 +1,12 @@
+import multiprocessing
+import time
+
 import numpy as np
-import time 
+from astropy.io import fits
 
 from .psf import GaussianPSFCube
 from .utils import calculate_bin_edges
 
-from astropy.io import fits
 
 def initcoef(order, scale, phi, x0=0, y0=0):
     """
@@ -109,6 +111,12 @@ def transform(x, y, order, coef):
 
     return [_x, _y]
 
+
+def _wrapper_propagate_mono(args):
+    ifs, i, lammin, lammax, psf_cube, image = args
+    ifs_image = ifs.propagate_mono(lammin, lammax, psf_cube, image_plane=image)
+    return (i, ifs_image * (lammax - lammin))
+
 class IFS:
     """Lenslet-based IFS simulator"""
     def __init__(self, lam_ref, R=50, nlens=50, pitch=174e-6, interlace=2, slens=0.5, 
@@ -151,7 +159,7 @@ class IFS:
             mask = r < self.nlens // 5
             image_plane[mask] = 1
             
-            print(image_plane.sum())
+            print(image_plane.sum() * np.abs(lammin-lammax))
         
         # detector stuff
         size = self.npix + 2*padwidth
@@ -181,14 +189,17 @@ class IFS:
                         y > npix // 2 and y < size - npix // 2):
                     continue
                 
-                # a = i_lens.ravel()[i] + image_plane.shape[0] //2
-                # b = j_lens.ravel()[i] + image_plane.shape[1]//2
                 
-                # val = image_plane[a,b]
-                # # print(val)
-                # if val == 0:
-                #     continue
-                val=1.0
+                if image_plane is not None:
+                    a = i_lens.ravel()[i] + image_plane.shape[0] //2
+                    b = j_lens.ravel()[i] + image_plane.shape[1]//2
+                    
+                    val = image_plane[a,b]
+                    # print(val)
+                    if val == 0:
+                        continue
+                else:
+                    val=1.0
                 # print(a,b, val)
                 iy1 = int(y) - npix // 2
                 iy2 = iy1 + npix
@@ -209,7 +220,7 @@ class IFS:
         # return  the padded images
         return image / nlam
     
-    def propagate_main(self, lam_bin_centers, images=None, lam_bin_edges=None, dlam=None):
+    def propagate_main(self, lam_bin_centers, image_test=None, lam_bin_edges=None, dlam=None, parallel=True):
         """
         1. generate the padded detector images
         2. multiple spectral cube spaxels with psflets cutouts and combine images into one
@@ -231,28 +242,44 @@ class IFS:
                 lam_bin_edges = np.array([lam_bin_centers - dlam / 2, lam_bin_centers + dlam / 2])
                 
         else:
-            print('Assuming wavelength bin edges were provided')
-            
+            print('Assuming wavelength bin edges were provided') 
         
         # initialize the psf model data cube
         psf_cube = GaussianPSFCube(lam_bin_centers, self.lam_ref, self.fwhm)
         
         # generate image templates
         images = []
-        for i in range(nlam):
-            lam_min, lam_max = lam_bin_edges[i], lam_bin_edges[i+1]
+        t_start = time.time()
+        
+        if parallel:
+            size = self.npix + 2*10
+            shape = (nlam, size,size)
+            images = np.zeros(shape)
+            ncpu = multiprocessing.cpu_count()
+            workers = [(self, i, lam_bin_edges[i], lam_bin_edges[i+1], psf_cube, image_test) 
+                       for i in range(nlam)]
             
-            t_start = time.time()
-            image = self.propagate_mono(lam_min, lam_max, psf_cube)
-            t_end = time.time()
-            dt = t_end - t_start
-            print(f'Ellapsed time: {dt} s')
-            images.append(image * (lam_max - lam_min))
+            with multiprocessing.Pool(ncpu) as pool:
+                results = pool.map(_wrapper_propagate_mono, workers)
+                
+            # store the results in the array and ensure proper order
+            iloc= []
+            for i in range(nlam):
+                images[i] = results[i][1]
+                iloc.append(results[i][0])
+                
+            print(f"Parallel processing return the follow order:\n{iloc}")
+                
+        else:
+            for i in range(nlam):
+                lam_min, lam_max = lam_bin_edges[i], lam_bin_edges[i+1]
+                image = self.propagate_mono(lam_min, lam_max, psf_cube, image_plane=image_test)
+                images.append(image * (lam_max - lam_min))
             
+        print(f'Ellapsed time: {time.time() - t_start}')  
         return images
-            
     
-    def save_science_frames_as_fits(self):
-        pass
+    
+    
     pass
 

@@ -93,7 +93,7 @@ class PSF:
         return map_coordinates(self._psf, coords, prefilter=False)
 
     
-    def interp2d(self):
+    def interp2d(self ):
         """Bilinear interpolation"""
         pass
     
@@ -140,6 +140,8 @@ class PSFCube:
     def __getitem__(self, idx):
         return self._psf_cube[idx]
     
+    def copy(self):
+        return copy.deepcopy(self)
         
 class GaussianPSFCube(PSFCube):
     def __init__(self, wavelengths, lam_ref, fwhm, **kwargs):
