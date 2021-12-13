@@ -249,10 +249,12 @@ class IFS:
         
         # generate image templates
         images = []
+        padwidth = 10
         t_start = time.time()
         
         if parallel:
-            size = self.npix + 2*10
+            
+            size = self.npix + 2*padwidth
             shape = (nlam, size,size)
             images = np.zeros(shape)
             ncpu = multiprocessing.cpu_count()
@@ -275,7 +277,7 @@ class IFS:
                 lam_min, lam_max = lam_bin_edges[i], lam_bin_edges[i+1]
                 image = self.propagate_mono(lam_min, lam_max, psf_cube, image_plane=image_test)
                 images.append(image * (lam_max - lam_min))
-            
+            images = np.array(images)
         print(f'Ellapsed time: {time.time() - t_start}')  
         return images
     
