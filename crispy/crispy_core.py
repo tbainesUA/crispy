@@ -1,11 +1,18 @@
 import multiprocessing
 import time
+import wave
 
 import numpy as np
 from astropy.io import fits
+from scipy.ndimage import map_coordinates
 
 from .psf import GaussianPSFCube
 from .utils import calculate_bin_edges
+
+
+
+
+
 
 
 def initcoef(order, scale, phi, x0=0, y0=0):
@@ -118,6 +125,7 @@ def _wrapper_propagate_mono(args):
     return (i, ifs_image * (lammax - lammin))
 
 class IFS:
+
     """Lenslet-based IFS simulator"""
     def __init__(self, lam_ref, R=50, nlens=50, pitch=174e-6, interlace=2, slens=0.5, 
                  npix=1024, pixsize=13e-6, fwhm=2, npixperdlam=2):
@@ -139,6 +147,8 @@ class IFS:
     def clocking_angle(self):
         """Lenslet clocking angle"""
         return np.arctan(1/self.interlace)
+
+        
     
     def propagate_mono(self, lammin, lammax, psfs, image_plane=None, nlam=10):
         
@@ -150,7 +160,7 @@ class IFS:
         scale = self.pitch / self.pixsize
         angle = self.clocking_angle
         
-        # lenslet coordinates
+        # lenslet coordinates or indice ids. 
         i_lens, j_lens = np.indices((self.nlens, self.nlens)) - self.nlens // 2 
         
         if image_plane is not None:
@@ -168,12 +178,189 @@ class IFS:
         
         # wavelengths to integrate over
         wavelengths = np.linspace(lammin, lammax, nlam, endpoint=True)
-           
+        # t1 = time.time()
+        # times = []
         for wavelength in wavelengths:
             
             # psf models to use
             psf = psfs.interp(wavelength)
+            # print(type(psf))
+            # calculate the centroid position on the detector
+            dispersion = self.npixperdlam * self.R * np.log(wavelength / self.lam_ref)
+            coef = initcoef(order, scale, angle, self.npix // 2 + dispersion, self.npix//2)
             
+            x_cen, y_cen = transform(i_lens, j_lens, order, coef)
+        
+            
+            x_cen = x_cen.reshape(-1) + padwidth
+            y_cen = y_cen.reshape(-1) + padwidth
+            
+            # print(x_cen, y_cen)
+            # image the psf onto the correct position
+            for i, (x, y) in enumerate(zip(x_cen, y_cen)):
+                if not (x > npix // 2 and x < size - npix // 2 and 
+                        y > npix // 2 and y < size - npix // 2):
+                    continue
+                
+                
+                if image_plane is not None:
+                    a = i_lens.ravel()[i] + image_plane.shape[0] //2
+                    b = j_lens.ravel()[i] + image_plane.shape[1]//2
+                    
+                    val = image_plane[a,b]
+                    # print(val)
+                    if val == 0:
+                        continue
+                else:
+                    val=1.0
+                # print(a,b, val)
+                iy1 = int(y) - npix // 2
+                iy2 = iy1 + npix
+                ix1 = int(x) - npix // 2
+                ix2 = ix1 + npix
+                
+                y_interp = upsample * ((y_det[iy1:iy2, ix1:ix2] - y)  +  npix / 2.)
+                x_interp = upsample * ((x_det[iy1:iy2, ix1:ix2] - x)  +  npix / 2.)
+                
+                # print(y_interp, x_interp)
+                # print('y interp', y_interp)
+                # print('x interp', x_interp)
+                # print(type(psf))
+                # print(psf.shape)
+                # t_a = time.time()
+                psflet = psf.map_psf([y_interp, x_interp])               
+                # t_b = time.time()
+                # times.append(t_b-t_a)
+               
+                image[iy1:iy2, ix1:ix2] += val * psflet 
+        # t2 = time.time()
+        # print(f'ellapsed time = {t2-t1} s')
+        # print(np.sum(image / nlam))
+        # return  the padded images
+        # print(f'total time {np.sum(times)}, avg {np.mean(times)}')
+        return image / nlam
+    
+    
+    
+    def propagate_mono_numpy(self, lammin, lammax, psfs, image_plane=None, nlam=10):
+   
+        
+        order=3
+        npix = 13 # box size
+        padwidth = 10
+        upsample = 10
+        scale = self.pitch / self.pixsize
+        angle = self.clocking_angle
+        
+        # lenslet coordinates or indice ids. 
+        i_lens, j_lens = np.indices((self.nlens, self.nlens)) - self.nlens // 2 
+        
+        if image_plane is not None:
+            image_plane = np.zeros((self.nlens, self.nlens))
+            r = np.hypot(i_lens, j_lens)
+            mask = r < self.nlens // 5
+            image_plane[mask] = 1
+            
+            print(image_plane.sum() * np.abs(lammin-lammax))
+        
+        # detector stuff
+        size = self.npix + 2*padwidth
+        images = np.zeros((nlam, size, size))
+        y_det, x_det = np.indices(images.shape[1:])
+        
+        temp_y, temp_x = np.indices((npix,npix), dtype=np.float64) - npix//2
+        
+        # wavelengths to integrate over
+        wavelengths = np.linspace(lammin, lammax, nlam, endpoint=True)
+        # t1 = time.time()
+        # times = []
+        for i, wavelength in enumerate(wavelengths):
+            
+            # psf models to use
+            psf = psfs.interp(wavelength)
+            # print(type(psf))
+            # calculate the centroid position on the detector
+            dispersion = self.npixperdlam * self.R * np.log(wavelength / self.lam_ref)
+            coef = initcoef(order, scale, angle, self.npix // 2 + dispersion, self.npix//2)
+            
+            x_cen, y_cen = transform(i_lens, j_lens, order, coef)
+            x_cen += padwidth
+            y_cen += padwidth
+            
+            mask = ((x_cen > npix // 2) & 
+                    (x_cen < size - npix // 2) & 
+                    (y_cen > npix // 2) & 
+                    (y_cen < size - npix // 2))
+            
+            x_cen = x_cen[mask].reshape(-1)
+            y_cen = y_cen[mask].reshape(-1)
+            
+            dx = x_cen.astype(int) - x_cen
+            dy = y_cen.astype(int) - y_cen
+            
+            # print(dx, dispersion)
+            
+            y_interp = upsample * (temp_y + dy.reshape(-1,1,1) + npix/2)
+            x_interp = upsample * (temp_x + dx.reshape(-1,1,1) + npix/2)
+            
+            
+            iy1 = y_cen.astype(int) - npix // 2
+            iy2 = iy1 + npix
+            ix1 = x_cen.astype(int) - npix // 2
+            ix2 = ix1 + npix
+            slices = np.vstack([iy1, iy2, ix1, ix2]).T
+            
+            
+            # map the psflets to the images 
+            for x, y, (m, M, n, N) in zip(x_interp, y_interp, slices):
+                psf.map_psf([y, x], val=1.0, output=images[i, m:M, n:N])
+                
+        
+            
+        # sum the images over the integrated psflets
+        # images = images.sum(axis=0) / nlam
+        
+        return np.mean(images, axis=0)#images 
+    
+    
+    def propagate_mono_v2(self, lammin, lammax, psfs, image_plane=None, nlam=10):
+        
+        
+        order=3
+        npix = 13 # box size
+        padwidth = 10
+        upsample = 10
+        scale = self.pitch / self.pixsize
+        angle = self.clocking_angle
+        
+        # lenslet coordinates or indice ids. 
+        i_lens, j_lens = np.indices((self.nlens, self.nlens)) - self.nlens // 2 
+        
+        
+        temp = np.zeros((npix, npix))
+        
+        if image_plane is not None:
+            image_plane = np.zeros((self.nlens, self.nlens))
+            r = np.hypot(i_lens, j_lens)
+            mask = r < self.nlens // 5
+            image_plane[mask] = 1
+            
+            print(image_plane.sum() * np.abs(lammin-lammax))
+        
+        # detector stuff
+        size = self.npix + 2*padwidth
+        image = np.zeros((size, size))
+        y_det, x_det = np.indices(image.shape)
+        
+        # wavelengths to integrate over
+        wavelengths = np.linspace(lammin, lammax, nlam, endpoint=True)
+        # t1 = time.time()
+        # times = []
+        for wavelength in wavelengths:
+            
+            # psf models to use
+            psf = psfs.interp(wavelength)
+            # print(type(psf))
             # calculate the centroid position on the detector
             dispersion = self.npixperdlam * self.R * np.log(wavelength / self.lam_ref)
             coef = initcoef(order, scale, angle, self.npix // 2 + dispersion, self.npix//2)
@@ -209,15 +396,231 @@ class IFS:
                 y_interp = upsample * ((y_det[iy1:iy2, ix1:ix2] - y)  +  npix / 2.)
                 x_interp = upsample * ((x_det[iy1:iy2, ix1:ix2] - x)  +  npix / 2.)
                 
+                # print(y_interp, x_interp)
+                # print('y interp', y_interp)
+                # print('x interp', x_interp)
                 # print(type(psf))
                 # print(psf.shape)
-                psflet = psf.map_psf([y_interp, x_interp])               
+                # t_a = time.time()
+                # psflet = psf.map_psf([y_interp, x_interp])  
+                
+                psflet = map_coordinates(psf._psf, [y_interp, x_interp], output=temp, prefilter=False)
+                             
+                # t_b = time.time()
+                # times.append(t_b-t_a)
                
-               
-                image[iy1:iy2, ix1:ix2] += val * psflet
-
+                image[iy1:iy2, ix1:ix2] += val * psflet 
+        # t2 = time.time()
+        # print(f'ellapsed time = {t2-t1} s')
         # print(np.sum(image / nlam))
         # return  the padded images
+        # print(f'total time {np.sum(times)}, avg {np.mean(times)}')
+        return image / nlam
+    
+    def propagate_mono_test(self, lammin, lammax, psfs, image_plane=None, nlam=10):
+        
+        
+        order=3
+        npix = 13 # box size
+        padwidth = 10
+        upsample = 10
+        scale = self.pitch / self.pixsize
+        angle = self.clocking_angle
+        
+        # lenslet coordinates or indice ids. 
+        i_lens, j_lens = np.indices((self.nlens, self.nlens)) - self.nlens // 2 
+        
+        if image_plane is not None:
+            image_plane = np.zeros((self.nlens, self.nlens))
+            r = np.hypot(i_lens, j_lens)
+            mask = r < self.nlens // 5
+            image_plane[mask] = 1
+            
+            print(image_plane.sum() * np.abs(lammin-lammax))
+        
+        # detector stuff
+        size = self.npix + 2*padwidth
+        image = np.zeros((size, size))
+        y_det, x_det = np.indices(image.shape)
+        
+        # wavelengths to integrate over
+        wavelengths = np.linspace(lammin, lammax, nlam, endpoint=True)
+        # detector stuff
+        size = self.npix + 2*padwidth
+        image = np.zeros((nlam, size, size))
+        y_det, x_det = np.indices(image.shape[1:])
+        # t1 = time.time()
+        # times = []
+        for i, wavelength in enumerate(wavelengths):
+            
+            # psf models to use
+            psf = psfs.interp(wavelength)
+            # print(type(psf))
+            # calculate the centroid position on the detector
+            dispersion = self.npixperdlam * self.R * np.log(wavelength / self.lam_ref)
+            coef = initcoef(order, scale, angle, self.npix / 2 + dispersion, self.npix/2)
+            x_cen, y_cen = transform(i_lens, j_lens, order, coef)
+            
+            x_cen = x_cen.reshape(-1) + padwidth
+            y_cen = y_cen.reshape(-1) + padwidth
+            
+            # print(x_cen, y_cen)
+            # image the psf onto the correct position
+            for j, (x, y) in enumerate(zip(x_cen, y_cen)):
+                # if not (x > npix // 2 and x < size - npix // 2 and 
+                #         y > npix // 2 and y < size - npix // 2):
+                #     continue
+                
+                if not ((x > npix // 2) & (x < size - npix // 2) & (y > npix // 2) & (y < size - npix // 2)):
+                    continue
+                
+                if image_plane is not None:
+                    a = i_lens.ravel()[j] + image_plane.shape[0] //2
+                    b = j_lens.ravel()[j] + image_plane.shape[1]//2
+                    
+                    val = image_plane[a,b]
+                    # print(val)
+                    if val == 0:
+                        continue
+                else:
+                    val=1.0
+                # print(a,b, val)
+                iy1 = int(y) - npix // 2
+                iy2 = iy1 + npix
+                ix1 = int(x) - npix // 2
+                ix2 = ix1 + npix
+                
+                y_interp = upsample * ((y_det[iy1:iy2, ix1:ix2] - y)  +  npix / 2.)
+                x_interp = upsample * ((x_det[iy1:iy2, ix1:ix2] - x)  +  npix / 2.)
+                
+                # print(y_interp, x_interp)
+                # print('y interp', y_interp)
+                # print('x interp', x_interp)
+                # print(type(psf))
+                # print(psf.shape)
+                # t_a = time.time()
+                psf.map_psf([y_interp, x_interp], val, output=image[i, iy1:iy2, ix1:ix2])               
+                # t_b = time.time()
+                # times.append(t_b-t_a)
+               
+                # image[iy1:iy2, ix1:ix2] += val * psflet 
+        # t2 = time.time()
+        # print(f'ellapsed time = {t2-t1} s')
+        # print(np.sum(image / nlam))
+        # return  the padded images
+        # print(f'total time {np.sum(times)}, avg {np.mean(times)}')
+        image = np.sum(image, axis=0) / nlam
+        return image
+   
+ 
+ 
+ 
+
+    def propagate_mono_new(self, lammin, lammax, psfs, image_plane=None, nlam=10, use_map=True):
+        
+        
+        order=3
+        npix = 13 # box size
+        padwidth = 10
+        upsample = 10
+        scale = self.pitch / self.pixsize
+        angle = self.clocking_angle
+        
+        # lenslet coordinates or indice ids. 
+        i_lens, j_lens = np.indices((self.nlens, self.nlens)) - self.nlens // 2 
+        
+        if image_plane is not None:
+            image_plane = np.zeros((self.nlens, self.nlens))
+            r = np.hypot(i_lens, j_lens)
+            mask = r < self.nlens // 5
+            image_plane[mask] = 1
+            
+            print(image_plane.sum() * np.abs(lammin-lammax))
+        
+        # detector stuff
+        size = self.npix + 2*padwidth
+        image = np.zeros((size, size))
+        # y_det, x_det = np.indices(image.shape)
+        
+        
+        temp_y, temp_x = np.indices((npix,npix)) - npix//2
+        
+        # wavelengths to integrate over
+        wavelengths = np.linspace(lammin, lammax, nlam, endpoint=True)
+         
+        # for wavelength in wavelengths:
+        def _map_lenslets(wavelength):
+            psf = psfs.interp(wavelength)
+            # print(type(psf))
+            # calculate the centroid position on the detector
+            dispersion = self.npixperdlam * self.R * np.log(wavelength / self.lam_ref)
+            coef = initcoef(order, scale, angle, self.npix // 2 + dispersion, self.npix//2)
+            
+  
+            # calculate coordinates of lenslet on detector
+            x_cens, y_cens = transform(i_lens, j_lens, order, coef)
+            x_cens += padwidth
+            y_cens += padwidth
+            
+            # detector mask
+            mask_ = ((x_cens >= npix // 2) & 
+                     (x_cens <= size - npix // 2) & 
+                     (y_cens >= npix // 2) & 
+                     (y_cens <= size - npix // 2))
+            
+            # centroids on the detector
+            x_cens = x_cens[mask_].reshape(-1) 
+            y_cens = y_cens[mask_].reshape(-1)
+            
+            # arraying indexing values
+            # iy1 = y_cens.astype(np.int) - npix // 2
+            # iy2 = iy1 + npix
+            # ix1 = x_cens.astype(np.int) - npix // 2
+            # ix2 = ix1 + npix
+            
+               
+            # centroid positions
+            # x_cen, y_cen = transform(i_lens, j_lens, order, coef)
+            # x_cen = x_cen.reshape(-1) + padwidth
+            # y_cen = y_cen.reshape(-1) + padwidth
+             
+            # y_interp = upsample * ((temp_y - y_cens[:, np.newaxis, np.newaxis])  +  npix / 2.)
+            # x_interp = upsample * ((temp_x - x_cens[:, np.newaxis, np.newaxis])  +  npix / 2.)
+            
+            dx = x_cens.astype(np.int) - x_cens
+            dy = y_cens.astype(np.int) - y_cens
+            
+            y_interp = upsample * (temp_y + dy.reshape(-1,1,1) + npix/2)
+            x_interp = upsample * (temp_x + dx.reshape(-1,1,1) + npix/2)
+            
+            
+            if use_map:
+                psflets = np.array(list(map(psf.map_psf, zip(y_interp, x_interp))))
+            else:
+                psflets = np.array([psf.map_psf(coords) for coords in zip(y_interp, x_interp)])
+            
+            iy1 = y_cens.astype(np.int) - npix // 2
+            iy2 = iy1 + npix
+            ix1 = x_cens.astype(np.int) - npix // 2
+            ix2 = ix1 + npix
+            
+            slices = np.vstack([iy1, iy2, ix1, ix2]).T
+            return psflets, slices
+            # for psf, (m, M, n, N) in zip(psflets, slices):
+            #     try:
+            #         image[m:M, n:N] += psf
+            #     except:
+            #         continue   
+                   
+        results = list(map(_map_lenslets, wavelengths))
+        
+        for res in results:
+            for psf, (m, M, n, N) in zip(*res):
+                try:
+                    image[m:M, n:N] += psf
+                except:
+                    continue   
+    
         return image / nlam
     
     def propagate_main(self, lam_bin_centers, image_test=None, lam_bin_edges=None, dlam=None, parallel=True):
@@ -246,9 +649,10 @@ class IFS:
         
         # initialize the psf model data cube
         psf_cube = GaussianPSFCube(lam_bin_centers, self.lam_ref, self.fwhm)
-        
+        # print(type(psf_cube))
         # generate image templates
         images = []
+        
         padwidth = 10
         t_start = time.time()
         
@@ -258,8 +662,15 @@ class IFS:
             shape = (nlam, size,size)
             images = np.zeros(shape)
             ncpu = multiprocessing.cpu_count()
-            workers = [(self, i, lam_bin_edges[i], lam_bin_edges[i+1], psf_cube, image_test) 
-                       for i in range(nlam)]
+            
+            if dlam is not None:
+                print(f'progating images with dlam={dlam} nm')
+                workers = [(self, i, lam_bin_centers[i]-dlam/2, lam_bin_centers[i] + dlam/2, psf_cube, image_test) 
+                           for i in range(nlam)]
+            else:
+                workers = [(self, i, lam_bin_edges[i], lam_bin_edges[i+1], psf_cube, image_test) 
+                           for i in range(nlam)]
+                
             
             with multiprocessing.Pool(ncpu) as pool:
                 results = pool.map(_wrapper_propagate_mono, workers)
@@ -274,7 +685,12 @@ class IFS:
                 
         else:
             for i in range(nlam):
-                lam_min, lam_max = lam_bin_edges[i], lam_bin_edges[i+1]
+                
+                if np.isscalar(dlam):
+                    lam_min, lam_max = lam_bin_centers[i]-dlam/2, lam_bin_centers[i] + dlam/2
+                else:
+                    lam_min, lam_max = lam_bin_edges[i], lam_bin_edges[i+1]
+                    
                 image = self.propagate_mono(lam_min, lam_max, psf_cube, image_plane=image_test)
                 images.append(image * (lam_max - lam_min))
             images = np.array(images)
@@ -283,5 +699,16 @@ class IFS:
     
     
     
+    
+    
+    
     pass
 
+# class Lenslets:
+#     def __init__(self, nlens, npix=13):
+#         self.nlens = nlens
+#         self.npix = npix
+        
+        
+        
+    

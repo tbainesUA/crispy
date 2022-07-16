@@ -20,7 +20,7 @@ import numpy as np
 from astropy.convolution import Gaussian2DKernel
 from astropy.io import fits
 from astropy.stats import gaussian_fwhm_to_sigma
-from scipy.ndimage import map_coordinates
+from scipy.ndimage import map_coordinates, spline_filter
 
 from .utils import _round_up_to_odd_integer, nearest
 
@@ -32,6 +32,10 @@ def get_gausssian_psf_cube(wavelengths, lam_fwhm, fwhm, npix=13, oversample=10):
     gaussian_psfs = [Gaussian2DKernel(sig, x_size=size).array for sig in sigma]
     return np.array(gaussian_psfs) * oversample**2
 
+
+def test_gaussian():
+    # integrate crispy implementation of the psf model
+    pass
 
 
 class PSF:
@@ -51,7 +55,7 @@ class PSF:
     
     def _init_arr(self):
         return np.zeros(self.shape)
-    
+        
     def normalize(self):
         pass
         
@@ -88,9 +92,11 @@ class PSF:
          
     # do other stuff
     
-    def map_psf(self, coords):
-        """makes the psflet that is on the detector"""        
-        return map_coordinates(self._psf, coords, prefilter=False)
+    def map_psf(self, coords, val=1.0, output=None):
+        """makes the psflet that is on the detector"""   
+        # return mymap_opt()    
+        psf = self._psf * val
+        return map_coordinates(psf, coords, output=output, prefilter=False)
 
     
     def interp2d(self ):
@@ -111,8 +117,6 @@ class PSFCube:
     def __init__(self, wavelengths):
         self._wavelengths = wavelengths
         self._psf_cube = None
-        
-
     
     def interp(self, wavelength):
         """interpolate a psf model given a wavelength"""
@@ -135,6 +139,7 @@ class PSFCube:
             dlam_bound = lam_1 - lam_0
             weight = (wavelength - lam_0) / dlam_bound
             psf_new =  (1 - weight) * psf_0 + weight * psf_1
+            psf_new._psf = spline_filter(psf_new._psf)
             return psf_new
     
     def __getitem__(self, idx):
