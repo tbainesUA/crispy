@@ -1,0 +1,112 @@
+Timer unit: 1e-07 s
+
+Total time: 3.0233 s
+File: c:\users\tbain\onedrive\desktop\github\crispy\crispy\crispy_core.py
+Function: propagate_mono_new at line 268
+
+Line #      Hits         Time  Per Hit   % Time  Line Contents
+==============================================================
+   268                                               def propagate_mono_new(self, lammin, lammax, psfs, image_plane=None, nlam=10):
+   269                                                   
+   270                                                   
+   271         1         14.0     14.0      0.0          order=3
+   272         1          9.0      9.0      0.0          npix = 13 # box size
+   273         1          6.0      6.0      0.0          padwidth = 10
+   274         1          5.0      5.0      0.0          upsample = 10
+   275         1         20.0     20.0      0.0          scale = self.pitch / self.pixsize
+   276         1        196.0    196.0      0.0          angle = self.clocking_angle
+   277                                                   
+   278                                                   # lenslet coordinates or indice ids. 
+   279         1       3019.0   3019.0      0.0          i_lens, j_lens = np.indices((self.nlens, self.nlens)) - self.nlens // 2 
+   280                                                   
+   281         1         14.0     14.0      0.0          if image_plane is not None:
+   282                                                       image_plane = np.zeros((self.nlens, self.nlens))
+   283                                                       r = np.hypot(i_lens, j_lens)
+   284                                                       mask = r < self.nlens // 5
+   285                                                       image_plane[mask] = 1
+   286                                                       
+   287                                                       print(image_plane.sum() * np.abs(lammin-lammax))
+   288                                                   
+   289                                                   # detector stuff
+   290         1         12.0     12.0      0.0          size = self.npix + 2*padwidth
+   291         1        200.0    200.0      0.0          image = np.zeros((size, size))
+   292                                                   # y_det, x_det = np.indices(image.shape)
+   293                                                   
+   294                                                   
+   295         1        281.0    281.0      0.0          temp_y, temp_x = np.indices((npix,npix)) - npix//2
+   296                                                   
+   297                                                   # wavelengths to integrate over
+   298         1       4710.0   4710.0      0.0          wavelengths = np.linspace(lammin, lammax, nlam, endpoint=True)
+   299                                                    
+   300                                                   # for wavelength in wavelengths:
+   301         1         17.0     17.0      0.0          def _map_lenslets(wavelength):
+   302                                                       psf = psfs.interp(wavelength)
+   303                                                       # print(type(psf))
+   304                                                       # calculate the centroid position on the detector
+   305                                                       dispersion = self.npixperdlam * self.R * np.log(wavelength / self.lam_ref)
+   306                                                       coef = initcoef(order, scale, angle, self.npix // 2 + dispersion, self.npix//2)
+   307                                                       
+   308                                             
+   309                                                       # calculate coordinates of lenslet on detector
+   310                                                       x_cens, y_cens = transform(i_lens, j_lens, order, coef)
+   311                                                       x_cens += padwidth
+   312                                                       y_cens += padwidth
+   313                                                       
+   314                                                       # detector mask
+   315                                                       mask_ = ((x_cens >= npix // 2) & 
+   316                                                                (x_cens <= size - npix // 2) & 
+   317                                                                (y_cens >= npix // 2) & 
+   318                                                                (y_cens <= size - npix // 2))
+   319                                                       
+   320                                                       # centroids on the detector
+   321                                                       x_cens = x_cens[mask_].reshape(-1) 
+   322                                                       y_cens = y_cens[mask_].reshape(-1)
+   323                                                       
+   324                                                       # arraying indexing values
+   325                                                       # iy1 = y_cens.astype(np.int) - npix // 2
+   326                                                       # iy2 = iy1 + npix
+   327                                                       # ix1 = x_cens.astype(np.int) - npix // 2
+   328                                                       # ix2 = ix1 + npix
+   329                                                       
+   330                                                          
+   331                                                       # centroid positions
+   332                                                       # x_cen, y_cen = transform(i_lens, j_lens, order, coef)
+   333                                                       # x_cen = x_cen.reshape(-1) + padwidth
+   334                                                       # y_cen = y_cen.reshape(-1) + padwidth
+   335                                                        
+   336                                                       # y_interp = upsample * ((temp_y - y_cens[:, np.newaxis, np.newaxis])  +  npix / 2.)
+   337                                                       # x_interp = upsample * ((temp_x - x_cens[:, np.newaxis, np.newaxis])  +  npix / 2.)
+   338                                                       
+   339                                                       dx = x_cens.astype(np.int) - x_cens
+   340                                                       dy = y_cens.astype(np.int) - y_cens
+   341                                                       
+   342                                                       y_interp = upsample * (temp_y + dy.reshape(-1,1,1) + npix/2)
+   343                                                       x_interp = upsample * (temp_x + dx.reshape(-1,1,1) + npix/2)
+   344                                                       
+   345                                                       
+   346                                                       
+   347                                                       psflets = np.array(list(map(psf.map_psf, zip(y_interp, x_interp))))
+   348                                                       
+   349                                                       iy1 = y_cens.astype(np.int) - npix // 2
+   350                                                       iy2 = iy1 + npix
+   351                                                       ix1 = x_cens.astype(np.int) - npix // 2
+   352                                                       ix2 = ix1 + npix
+   353                                                       
+   354                                                       slices = np.vstack([iy1, iy2, ix1, ix2]).T
+   355                                                       return psflets, slices
+   356                                                       # for psf, (m, M, n, N) in zip(psflets, slices):
+   357                                                       #     try:
+   358                                                       #         image[m:M, n:N] += psf
+   359                                                       #     except:
+   360                                                       #         continue   
+   361                                                              
+   362         1   25734539.0 25734539.0     85.1          results = list(map(_map_lenslets, wavelengths))
+   363                                                   
+   364        11        123.0     11.2      0.0          for res in results:
+   365     59760    1236051.0     20.7      4.1              for psf, (m, M, n, N) in zip(*res):
+   366     59750     381975.0      6.4      1.3                  try:
+   367     59750    2856906.0     47.8      9.4                      image[m:M, n:N] += psf
+   368                                                           except:
+   369                                                               continue   
+   370                                               
+   371         1      14908.0  14908.0      0.0          return image / nlam
